@@ -1193,6 +1193,62 @@ def _normalize_chat_completion_response(response: dict) -> dict:
                 }
             continue
 
+        # Handle non-standard 'images' field from upstream APIs
+        # (e.g. NewAPI proxying Gemini drawing models returns base64 images
+        #  in message.images instead of in message.content)
+        # Known formats:
+        #   1) [{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}]
+        #   2) [{"url":"data:image/...;base64,..."}]
+        #   3) [{"b64_json":"..."}]
+        #   4) ["<raw_base64_string>"]
+        images = message.get("images")
+        if isinstance(images, list) and images:
+            image_parts = []
+            for idx, img in enumerate(images):
+                b64_data = None
+                mime_type = "image/png"
+                if isinstance(img, dict):
+                    # Format 1: OpenAI multimodal nested format
+                    # {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+                    image_url_obj = img.get("image_url")
+                    if isinstance(image_url_obj, dict):
+                        nested_url = image_url_obj.get("url", "")
+                        if nested_url:
+                            image_parts.append(f"![image_{idx}]({nested_url})")
+                            continue
+
+                    # Format 2: flat url
+                    url_val = img.get("url", "")
+                    if url_val.startswith("data:"):
+                        image_parts.append(f"![image_{idx}]({url_val})")
+                        continue
+
+                    # Format 3: b64_json or similar
+                    b64_data = img.get("b64_json") or img.get("base64") or img.get("data")
+                    mime_type = img.get("content_type") or img.get("mime_type") or "image/png"
+                elif isinstance(img, str):
+                    # Format 4: raw base64 string
+                    b64_data = img
+
+                if b64_data:
+                    if b64_data.startswith("data:"):
+                        image_parts.append(f"![image_{idx}]({b64_data})")
+                    else:
+                        image_parts.append(
+                            f"![image_{idx}](data:{mime_type};base64,{b64_data})"
+                        )
+
+            if image_parts:
+                existing_content = message.get("content") or ""
+                images_md = "\n\n".join(image_parts)
+                message["content"] = (
+                    f"{existing_content}\n\n{images_md}" if existing_content else images_md
+                )
+                log.info(
+                    "[NORMALIZE] Injected %d image(s) from message.images into content",
+                    len(image_parts),
+                )
+
         content = message.get("content")
         normalized = _stringify_message_content(content)
         if normalized:

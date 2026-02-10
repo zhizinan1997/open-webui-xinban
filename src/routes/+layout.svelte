@@ -917,6 +917,6 @@
 				: 'light'
 			: 'light'}
 	richColors
-	position="bottom-center"
+	position="top-right"
 	duration={3000}
 />

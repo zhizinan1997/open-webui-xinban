@@ -243,7 +243,7 @@
 										<span>{$i18n.t('Documentation')}</span>
 									</a>
 									<a
-										href="https://github.com/ztx888/open-webui"
+										href="https://github.com/zhizinan1997/open-webui-xinban"
 										target="_blank"
 										class="flex items-center gap-2.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400 transition"
 									>
@@ -265,7 +265,7 @@
 							</div>
 
 							<div class="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
-								<a href="https://github.com/ztx888/open-webui" target="_blank" class="block">
+								<a href="https://github.com/zhizinan1997/open-webui-xinban" target="_blank" class="block">
 									<img
 										alt="Github Repo"
 										src="https://img.shields.io/github/stars/ztx888/open-webui?style=social&label=Star us on Github"
