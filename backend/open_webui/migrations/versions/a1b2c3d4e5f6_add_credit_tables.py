@@ -40,6 +40,8 @@ def _create_index_if_not_exists(index_name, table_name, columns, existing_indexe
 
 def upgrade() -> None:
     existing_tables = set(get_existing_tables())
+    conn = op.get_bind()
+    inspector = Inspector.from_engine(conn)
 
     # Create credit table
     if "credit" not in existing_tables:
@@ -100,6 +102,16 @@ def upgrade() -> None:
         )
 
     # ---------------------------------------------------------------
+    # Add price column to model table if it doesn't exist
+    # ---------------------------------------------------------------
+    if "model" in existing_tables:
+        model_columns = {col["name"] for col in inspector.get_columns("model")}
+        if "price" not in model_columns:
+            # Use batch_alter_table for SQLite compatibility
+            with op.batch_alter_table("model") as batch_op:
+                batch_op.add_column(sa.Column("price", sa.JSON(), nullable=True))
+
+    # ---------------------------------------------------------------
     # For existing tables that were created outside of migrations
     # (e.g. by SQLAlchemy create_all), ensure all indexes exist.
     # This handles the upgrade scenario where tables already exist
@@ -151,6 +163,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Remove price column from model table
+    with op.batch_alter_table("model") as batch_op:
+        batch_op.drop_column("price")
+    
+    # Drop credit tables
     op.drop_table("redemption_code")
     op.drop_table("trade_ticket")
     op.drop_table("credit_log")

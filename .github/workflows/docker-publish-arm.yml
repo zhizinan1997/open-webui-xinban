@@ -42,6 +42,7 @@ jobs:
             type=raw,value=latest,suffix=-arm64
             type=semver,pattern={{version}},suffix=-arm64
             type=semver,pattern=v{{version}},suffix=-arm64
+            type=ref,event=tag,suffix=-arm64
           labels: |
             org.opencontainers.image.source=${{ github.event.repository.html_url }}
             org.opencontainers.image.description=Open WebUI Docker Image (ARM64)

@@ -36,22 +36,36 @@ Docker 镜像**仅在以下情况下**构建和推送：
 
 ### AMD64 镜像
 
-发布版本 `v0.7.3-8` 时，会创建以下标签：
+**标准 Semver 格式** — 发布版本 `v0.7.3-7` 时，会创建以下标签：
 
 ```
 ghcr.io/ztx888/openwebui:latest
-ghcr.io/ztx888/openwebui:0.7.3-8
-ghcr.io/ztx888/openwebui:v0.7.3-8
+ghcr.io/ztx888/openwebui:0.7.3-7
+ghcr.io/ztx888/openwebui:v0.7.3-7
+```
+
+**非 Semver 格式** — 发布版本 `v0.7.2.2` 时，会创建以下标签：
+
+```
+ghcr.io/ztx888/openwebui:latest
+ghcr.io/ztx888/openwebui:v0.7.2.2
 ```
 
 ### ARM64 镜像
 
-发布版本 `v0.7.3-8` 时，会创建以下标签：
+**标准 Semver 格式** — 发布版本 `v0.7.3-7` 时，会创建以下标签：
 
 ```
 ghcr.io/ztx888/openwebui:latest-arm64
-ghcr.io/ztx888/openwebui:0.7.3-8-arm64
-ghcr.io/ztx888/openwebui:v0.7.3-8-arm64
+ghcr.io/ztx888/openwebui:0.7.3-7-arm64
+ghcr.io/ztx888/openwebui:v0.7.3-7-arm64
+```
+
+**非 Semver 格式** — 发布版本 `v0.7.2.2` 时，会创建以下标签：
+
+```
+ghcr.io/ztx888/openwebui:latest-arm64
+ghcr.io/ztx888/openwebui:v0.7.2.2-arm64
 ```
 
 ## 📦 使用镜像
