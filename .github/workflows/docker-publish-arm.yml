@@ -1,8 +1,8 @@
 name: Build and Push Docker Image (ARM64)
 
 on:
-  push:
-    branches: [ "main" ]
+  release:
+    types: [published]
   workflow_dispatch:
 
 env:
@@ -40,7 +40,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,suffix=-arm64
-            type=sha,prefix=git-,suffix=-arm64
+            type=semver,pattern={{version}},suffix=-arm64
+            type=semver,pattern=v{{version}},suffix=-arm64
           labels: |
             org.opencontainers.image.source=${{ github.event.repository.html_url }}
             org.opencontainers.image.description=Open WebUI Docker Image (ARM64)
