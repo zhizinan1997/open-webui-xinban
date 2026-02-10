@@ -9,7 +9,7 @@ from open_webui.models.groups import Groups
 from open_webui.models.users import User, UserModel, Users, UserResponse
 
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from sqlalchemy import String, cast, or_, and_, func
 from sqlalchemy.dialects import postgresql, sqlite
@@ -97,6 +97,8 @@ class Model(Base):
     #      }
     #   }
 
+    price = Column(JSON, nullable=True)
+
     is_active = Column(Boolean, default=True)
 
     updated_at = Column(BigInteger)
@@ -113,6 +115,8 @@ class ModelModel(BaseModel):
     meta: ModelMeta
 
     access_control: Optional[dict] = None
+
+    price: Optional[dict] = None
 
     is_active: bool
     updated_at: int  # timestamp in epoch
@@ -148,6 +152,39 @@ class ModelAccessListResponse(BaseModel):
     total: int
 
 
+class ModelPriceForm(BaseModel):
+    prompt_price: float = Field(
+        default=0, description="prompt token price for 1m tokens", ge=0
+    )
+    completion_price: float = Field(
+        default=0, description="completion token price for 1m tokens", ge=0
+    )
+    prompt_long_ctx_tokens: int = Field(
+        default=200000, description="number of long context tokens for prompt", ge=0
+    )
+    prompt_long_ctx_price: float = Field(
+        default=0, description="prompt long context token price for 1m tokens", ge=0
+    )
+    completion_long_ctx_tokens: int = Field(
+        default=200000, description="number of long context tokens for completion", ge=0
+    )
+    completion_long_ctx_price: float = Field(
+        default=0, description="completion long context token price for 1m tokens", ge=0
+    )
+    prompt_cache_price: float = Field(
+        default=0, description="prompt cache token price for 1m tokens", ge=0
+    )
+    prompt_long_ctx_cache_price: float = Field(
+        default=0,
+        description="prompt long context cache token price for 1m tokens",
+        ge=0,
+    )
+    request_price: float = Field(default=0, description="price for 1m request", ge=0)
+    minimum_credit: float = Field(
+        default=0, description="min credit required for this model", ge=0
+    )
+
+
 class ModelForm(BaseModel):
     id: str
     base_model_id: Optional[str] = None
@@ -155,6 +192,7 @@ class ModelForm(BaseModel):
     meta: ModelMeta
     params: ModelParams
     access_control: Optional[dict] = None
+    price: Optional[ModelPriceForm] = None
     is_active: bool = True
 
 

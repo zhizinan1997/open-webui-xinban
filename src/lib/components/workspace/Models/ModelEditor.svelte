@@ -15,7 +15,6 @@
 	import FiltersSelector from '$lib/components/workspace/Models/FiltersSelector.svelte';
 	import ActionsSelector from '$lib/components/workspace/Models/ActionsSelector.svelte';
 	import Capabilities from '$lib/components/workspace/Models/Capabilities.svelte';
-	import BillingSettings from '$lib/components/workspace/Models/BillingSettings.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import AccessControl from '../common/AccessControl.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -80,6 +79,18 @@
 		},
 		params: {
 			system: ''
+		},
+		price: {
+			prompt_price: 0,
+			prompt_long_ctx_tokens: 0,
+			prompt_long_ctx_price: 0,
+			prompt_cache_price: 0,
+			prompt_long_ctx_cache_price: 0,
+			completion_price: 0,
+			completion_long_ctx_tokens: 0,
+			completion_long_ctx_price: 0,
+			request_price: 0,
+			minimum_credit: 0
 		}
 	};
 
@@ -107,16 +118,6 @@
 	};
 	let defaultFeatureIds = [];
 
-	let billing = {
-		type: 'free',
-		currency: 'CNY',
-		per_use_price: 0,
-		per_use_multiplier: 1,
-		input_price: 0,
-		output_price: 0,
-		price_unit: 'M',
-		token_multiplier: 1
-	};
 
 	let actionIds = [];
 	let accessControl = {};
@@ -208,14 +209,6 @@
 			}
 		}
 
-		// Save billing settings
-		if (billing.type !== 'free') {
-			info.meta.billing = billing;
-		} else {
-			if (info.meta.billing) {
-				delete info.meta.billing;
-			}
-		}
 
 		if (tts.voice !== '') {
 			if (!info.meta.tts) info.meta.tts = {};
@@ -317,9 +310,9 @@
 			defaultFeatureIds = model?.meta?.defaultFeatureIds ?? [];
 			tts = { voice: model?.meta?.tts?.voice ?? '' };
 
-			// Load billing settings
+			// Load price settings
 			if (model?.meta?.billing) {
-				billing = { ...billing, ...model.meta.billing };
+				// ignore old incompatible billing data
 			}
 
 			if ('access_control' in model) {
@@ -344,6 +337,20 @@
 					)
 				)
 			};
+			if (!info.price) {
+				info.price = {
+					prompt_price: 0,
+					prompt_long_ctx_tokens: 0,
+					prompt_long_ctx_price: 0,
+					prompt_cache_price: 0,
+					prompt_long_ctx_cache_price: 0,
+					completion_price: 0,
+					completion_long_ctx_tokens: 0,
+					completion_long_ctx_price: 0,
+					request_price: 0,
+					minimum_credit: 0
+				};
+			}
 
 			console.log(model);
 		}
@@ -772,9 +779,162 @@
 						</div>
 					</CollapsibleSection>
 
-					<!-- 计费设置 -->
-					<CollapsibleSection title={$i18n.t('Billing Settings')} open={false} className="mt-3">
-						<BillingSettings bind:billing />
+					<!-- 模型积分消耗设置 -->
+					<CollapsibleSection title={$i18n.t('Model Credit Cost')} open={false} className="mt-3">
+						<div class="my-2">
+							<div class="text-xs text-orange-600">
+								{$i18n.t('Unit: 1M tokens or 1M requests')}
+							</div>
+							<div class="text-xs text-gray-500">
+								{$i18n.t('Request price has higher priority than token price')}
+							</div>
+							<hr class=" border-gray-100 dark:border-gray-850 my-1.5" />
+							<div class="text-xs font-bold">
+								{$i18n.t('Base Configuration')}
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Prompt Token Price')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="0.0001"
+									min="0"
+									bind:value={info.price.prompt_price}
+									autocomplete="off"
+								/>
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Completion Token Price')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="0.0001"
+									min="0"
+									bind:value={info.price.completion_price}
+									autocomplete="off"
+								/>
+							</div>
+							<hr class=" border-gray-100 dark:border-gray-850 my-1.5" />
+							<div class="text-xs font-bold">
+								{$i18n.t('Long Context Configuration')}
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Prompt Long Ctx Threshold')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="1"
+									min="0"
+									bind:value={info.price.prompt_long_ctx_tokens}
+									autocomplete="off"
+								/>
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Prompt Long Ctx Token Price')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="0.0001"
+									min="0"
+									bind:value={info.price.prompt_long_ctx_price}
+									autocomplete="off"
+								/>
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Completion Long Ctx Threshold')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="1"
+									min="0"
+									bind:value={info.price.completion_long_ctx_tokens}
+									autocomplete="off"
+								/>
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Completion Long Ctx Token Price')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="1"
+									min="0"
+									bind:value={info.price.completion_long_ctx_price}
+									autocomplete="off"
+								/>
+							</div>
+							<hr class=" border-gray-100 dark:border-gray-850 my-1.5" />
+							<div class="text-xs font-bold">
+								{$i18n.t('Prompt Cache Configuration')}
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Prompt Token Price')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="0.0001"
+									min="0"
+									bind:value={info.price.prompt_cache_price}
+									autocomplete="off"
+								/>
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Prompt Long Ctx Token Price')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="0.0001"
+									min="0"
+									bind:value={info.price.prompt_long_ctx_cache_price}
+									autocomplete="off"
+								/>
+							</div>
+							<hr class=" border-gray-100 dark:border-gray-850 my-1.5" />
+							<div class="text-xs font-bold">
+								{$i18n.t('Other Configuration')}
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Request Price')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="0.0001"
+									min="0"
+									bind:value={info.price.request_price}
+									autocomplete="off"
+								/>
+							</div>
+							<div class="mt-1 flex justify-between text-xs">
+								<span class="min-w-36">
+									{$i18n.t('Minimum Credit Required')}
+								</span>
+								<input
+									class="w-full flex flex-1 text-xs bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									type="number"
+									step="0.0001"
+									min="0"
+									bind:value={info.price.minimum_credit}
+									autocomplete="off"
+								/>
+							</div>
+						</div>
 					</CollapsibleSection>
 
 					<!-- 保存按钮 -->

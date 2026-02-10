@@ -39,7 +39,8 @@
 		role: 'pending',
 		name: '',
 		email: '',
-		password: ''
+		password: '',
+		credit: 0
 	};
 
 	let userGroups: any[] | null = null;
@@ -159,6 +160,20 @@
 												type="text"
 												bind:value={_user.name}
 												placeholder={$i18n.t('Enter Your Name')}
+												autocomplete="off"
+												required
+											/>
+										</div>
+									</div>
+
+									<div class="flex flex-col w-full">
+										<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Credit')}</div>
+										<div class="flex-1">
+											<input
+												class="w-full text-sm bg-transparent outline-hidden"
+												type="number"
+												step="0.000000000001"
+												bind:value={_user.credit}
 												autocomplete="off"
 												required
 											/>

@@ -650,7 +650,9 @@ def extract_urls(text: str) -> list[str]:
     return url_pattern.findall(text)
 
 
-def stream_chunks_handler(stream: aiohttp.StreamReader):
+def stream_chunks_handler(
+    user: "UserModel", model_id: str, form_data: dict, stream: aiohttp.StreamReader
+):
     """
     Handle stream response chunks, supporting large data chunks that exceed the original 16kb limit.
     When a single line exceeds max_buffer_size, returns an empty JSON string {} and skips subsequent data
@@ -659,13 +661,16 @@ def stream_chunks_handler(stream: aiohttp.StreamReader):
     Also normalizes SSE format: if a line looks like raw JSON (starts with '{') but doesn't have 
     'data:' prefix, it adds the prefix for compatibility with proxies that return raw JSON.
 
+    :param user: The user making the request.
+    :param model_id: The ID of the model being used.
+    :param form_data: The form data associated with the request.
     :param stream: The stream reader to handle.
     :return: An async generator that yields the stream data.
     """
 
+    from open_webui.utils.credit.usage import CreditDeduct
+
     max_buffer_size = CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE
-    if max_buffer_size is None or max_buffer_size <= 0:
-        return stream
 
     def normalize_sse_line(line: bytes) -> bytes:
         """
@@ -704,75 +709,105 @@ def stream_chunks_handler(stream: aiohttp.StreamReader):
         
         return line
 
+    if max_buffer_size is None or max_buffer_size <= 0:
+
+        async def consumer_content(stream: aiohttp.StreamReader):
+            with CreditDeduct(
+                user=user,
+                model_id=model_id,
+                body=form_data,
+                is_stream=True,
+            ) as credit_deduct:
+                # change to avoid multi \n\n cause message lose
+                async for chunk in stream:
+                    credit_deduct.run(response=chunk)
+                    yield chunk
+
+                yield credit_deduct.usage_message
+
+        return consumer_content(stream)
+
     async def yield_safe_stream_chunks():
         buffer = b""
         skip_mode = False
         chunk_count = 0
 
-        async for data, _ in stream.iter_chunks():
-            if not data:
-                continue
+        with CreditDeduct(
+            user=user,
+            model_id=model_id,
+            body=form_data,
+            is_stream=True,
+        ) as credit_deduct:
+            async for data, _ in stream.iter_chunks():
+                if not data:
+                    continue
 
-            chunk_count += 1
-            # Log first few chunks for debugging
-            if chunk_count <= 3:
-                log.info(f"[stream_chunks_handler] Chunk #{chunk_count}, size={len(data)}, preview={data[:200] if len(data) > 200 else data}")
-            
-            # SAFEGUARD: Ensure data is bytes, convert if needed
-            # Some proxy servers may return string chunks instead of bytes
-            if isinstance(data, str):
-                data = data.encode("utf-8", errors="replace")
-            elif not isinstance(data, bytes):
-                try:
-                    data = bytes(data)
-                except Exception:
-                    data = str(data).encode("utf-8", errors="replace")
+                chunk_count += 1
+                # Log first few chunks for debugging
+                if chunk_count <= 3:
+                    log.info(f"[stream_chunks_handler] Chunk #{chunk_count}, size={len(data)}, preview={data[:200] if len(data) > 200 else data}")
+                
+                credit_deduct.run(response=data)
 
-            # In skip_mode, if buffer already exceeds the limit, clear it (it's part of an oversized line)
-            if skip_mode and len(buffer) > max_buffer_size:
-                buffer = b""
+                # SAFEGUARD: Ensure data is bytes, convert if needed
+                # Some proxy servers may return string chunks instead of bytes
+                if isinstance(data, str):
+                    data = data.encode("utf-8", errors="replace")
+                elif not isinstance(data, bytes):
+                    try:
+                        data = bytes(data)
+                    except Exception:
+                        data = str(data).encode("utf-8", errors="replace")
 
-            lines = (buffer + data).split(b"\n")
+                # In skip_mode, if buffer already exceeds the limit, clear it (it's part of an oversized line)
+                if skip_mode and len(buffer) > max_buffer_size:
+                    buffer = b""
 
-            # Process complete lines (except the last possibly incomplete fragment)
-            for i in range(len(lines) - 1):
-                line = lines[i]
+                lines = (buffer + data).split(b"\n")
 
-                if skip_mode:
-                    # Skip mode: check if current line is small enough to exit skip mode
-                    if len(line) <= max_buffer_size:
-                        skip_mode = False
-                        yield normalize_sse_line(line)
+                # Process complete lines (except the last possibly incomplete fragment)
+                for i in range(len(lines) - 1):
+                    line = lines[i]
+
+                    if skip_mode:
+                        # Skip mode: check if current line is small enough to exit skip mode
+                        if len(line) <= max_buffer_size:
+                            skip_mode = False
+                            yield normalize_sse_line(line)
+                        else:
+                            yield b"data: {}"
+                            yield b"\n"
                     else:
-                        yield b"data: {}"
-                        yield b"\n"
-                else:
-                    # Normal mode: check if line exceeds limit
-                    if len(line) > max_buffer_size:
-                        skip_mode = True
-                        yield b"data: {}"
-                        yield b"\n"
-                        log.info(f"Skip mode triggered, line size: {len(line)}")
-                    else:
-                        yield normalize_sse_line(line)
-                        yield b"\n"
+                        # Normal mode: check if line exceeds limit
+                        if len(line) > max_buffer_size:
+                            skip_mode = True
+                            yield b"data: {}"
+                            yield b"\n"
+                            log.info(f"Skip mode triggered, line size: {len(line)}")
+                        else:
+                            yield normalize_sse_line(line)
+                            yield b"\n"
 
-            # Save the last incomplete fragment
-            buffer = lines[-1]
+                # Save the last incomplete fragment
+                buffer = lines[-1]
 
-            # Check if buffer exceeds limit
-            if not skip_mode and len(buffer) > max_buffer_size:
-                skip_mode = True
-                log.info(f"Skip mode triggered, buffer size: {len(buffer)}")
-                # Clear oversized buffer to prevent unlimited growth
-                buffer = b""
+                # Check if buffer exceeds limit
+                if not skip_mode and len(buffer) > max_buffer_size:
+                    skip_mode = True
+                    log.info(f"Skip mode triggered, buffer size: {len(buffer)}")
+                    # Clear oversized buffer to prevent unlimited growth
+                    buffer = b""
 
-        # Process remaining buffer data
-        if buffer and not skip_mode:
-            yield normalize_sse_line(buffer)
-            yield b"\n"
+            # Process remaining buffer data
+            if buffer and not skip_mode:
+                credit_deduct.run(response=buffer)
+                yield normalize_sse_line(buffer)
+                yield b"\n"
+
+            yield credit_deduct.usage_message
 
         log.info(f"[stream_chunks_handler] Stream ended, total chunks processed: {chunk_count}")
 
     return yield_safe_stream_chunks()
+
 

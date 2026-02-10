@@ -33,6 +33,11 @@ from open_webui.env import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
 
+try:
+    from open_webui.utils.credit.usage import CreditDeduct
+except ImportError:
+    CreditDeduct = None
+
 
 log = logging.getLogger(__name__)
 
@@ -1288,164 +1293,104 @@ async def generate_chat_completion(
                             return
 
                         # Optional: send role first (OpenAI-style)
-                        yield f"data: {json.dumps(_openai_chunk(stream_id, model_id, {'role': 'assistant'}), ensure_ascii=False)}\n\n"
+                        role_line = f"data: {json.dumps(_openai_chunk(stream_id, model_id, {'role': 'assistant'}), ensure_ascii=False)}\n\n"
 
-                        async for raw in response.content.iter_any():
-                            if not raw:
-                                continue
+                        # Initialize CreditDeduct for streaming
+                        credit_ctx = None
+                        credit_deduct = None
+                        if CreditDeduct and user:
+                            credit_ctx = CreditDeduct(
+                                user=user,
+                                model_id=model_id,
+                                body=form_data,
+                                is_stream=True,
+                            )
+                            credit_deduct = credit_ctx.__enter__()
 
-                            # Decode bytes to string, handling incomplete UTF-8 sequences
-                            chunk_str = decoder.decode(raw, False)
-                            if not chunk_str:
-                                continue
-                            buf += chunk_str
+                        try:
+                            credit_deduct and credit_deduct.run(role_line)
+                            yield role_line
 
-                            # SSE events are separated by blank line
-                            while "\n\n" in buf:
-                                event, buf = buf.split("\n\n", 1)
-                                if not event.strip():
+                            async for raw in response.content.iter_any():
+                                if not raw:
                                     continue
 
-                                # collect all data lines
-                                data_lines = []
-                                for line in event.splitlines():
-                                    line = line.rstrip("\r")
-                                    if line.startswith("data:"):
-                                        data_lines.append(line[5:].lstrip())
-                                if not data_lines:
+                                # Decode bytes to string, handling incomplete UTF-8 sequences
+                                chunk_str = decoder.decode(raw, False)
+                                if not chunk_str:
                                     continue
+                                buf += chunk_str
 
-                                data_str = "\n".join(data_lines).strip()
-                                if not data_str:
-                                    continue
+                                # SSE events are separated by blank line
+                                while "\n\n" in buf:
+                                    event, buf = buf.split("\n\n", 1)
+                                    if not event.strip():
+                                        continue
 
-                                if data_str == "[DONE]":
-                                    yield "data: [DONE]\n\n"
-                                    return
+                                    # collect all data lines
+                                    data_lines = []
+                                    for line in event.splitlines():
+                                        line = line.rstrip("\r")
+                                        if line.startswith("data:"):
+                                            data_lines.append(line[5:].lstrip())
+                                    if not data_lines:
+                                        continue
 
-                                # Handle potentially stacked JSONs (e.g. if \n\n was missed or data lines merged)
-                                json_decoder = json.JSONDecoder()
-                                pos = 0
-                                while pos < len(data_str):
-                                    search_str = data_str[pos:].lstrip()
-                                    if not search_str:
-                                        break
-                                    try:
-                                        gemini_obj, idx = json_decoder.raw_decode(search_str)
-                                        # raw_decode returns index relative to search_str
-                                        pos += len(data_str[pos:]) - len(search_str) + idx
-                                        
-                                        candidates = gemini_obj.get("candidates") or []
-                                        if not candidates:
-                                            continue
+                                    data_str = "\n".join(data_lines).strip()
+                                    if not data_str:
+                                        continue
 
-                                        c0 = candidates[0]
-                                        # SAFEGUARD: Skip if candidate is None
-                                        if c0 is None:
-                                            continue
-                                        text, image_md, grounding_md, thinking_content, tool_calls, global_tool_call_index = _extract_content(c0, global_tool_call_index)
-                                        out_text = (text or "") + (image_md or "") + (grounding_md or "")
+                                    if data_str == "[DONE]":
+                                        if credit_deduct:
+                                            yield credit_deduct.usage_message
+                                        yield "data: [DONE]\n\n"
+                                        return
 
-                                        # 1) yield thinking content first if present (reasoning_content for frontend)
-                                        if thinking_content:
-                                            thinking_chunk = _openai_chunk(stream_id, model_id, {"reasoning_content": thinking_content}, None, 0)
-                                            yield f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n"
-
-                                        # 2) yield tool calls if present
-                                        if tool_calls:
-                                            for tool_call in tool_calls:
-                                                tool_chunk = _openai_chunk(stream_id, model_id, {"tool_calls": [tool_call]}, None, 0)
-                                                yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
-
-                                        # 3) yield content if present (with chunking for large content like images)
-                                        if out_text:
-                                            for content_chunk in _yield_content_chunks(out_text, stream_id, model_id):
-                                                yield content_chunk
-
-                                        # 4) then yield finish with usage
-                                        finish = _map_finish_reason(c0.get("finishReason") if isinstance(c0, dict) else None)
-                                        if finish:
-                                            # If there are tool calls, override finish_reason to "tool_calls"
-                                            if tool_calls:
-                                                finish = "tool_calls"
-                                            # Extract usage from gemini response
-                                            usage_meta = gemini_obj.get("usageMetadata", {}) or {}
-                                            usage = None
-                                            if usage_meta:
-                                                usage = {
-                                                    "prompt_tokens": usage_meta.get("promptTokenCount", 0),
-                                                    "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
-                                                    "total_tokens": usage_meta.get("totalTokenCount", 0),
-                                                }
-                                                # Add thinking tokens if available
-                                                if usage_meta.get("thoughtsTokenCount"):
-                                                    usage["reasoning_tokens"] = usage_meta.get("thoughtsTokenCount", 0)
-                                            fin_chunk = _openai_chunk(stream_id, model_id, {}, finish, 0, usage)
-                                            yield f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n"
-                                            yield "data: [DONE]\n\n"
-                                            return
+                                    # Handle potentially stacked JSONs (e.g. if \n\n was missed or data lines merged)
+                                    json_decoder = json.JSONDecoder()
+                                    pos = 0
+                                    while pos < len(data_str):
+                                        search_str = data_str[pos:].lstrip()
+                                        if not search_str:
+                                            break
+                                        try:
+                                            gemini_obj, idx = json_decoder.raw_decode(search_str)
+                                            # raw_decode returns index relative to search_str
+                                            pos += len(data_str[pos:]) - len(search_str) + idx
                                             
-                                    except json.JSONDecodeError as e:
-                                        # If we can't decode the *first* object, it might be a partial frame (in main loop)
-                                        # If we are in flush, it's just broken data.
-                                        if pos == 0:
-                                            # Put back and wait for more bytes (rare but safe)
-                                            log.warning(f"JSON decode error (event): {e}, head={data_str[:120]}")
-                                            buf = event + "\n\n" + buf
-                                        else:
-                                            log.warning(f"JSON decode error (stacked): {e} at pos {pos}")
-                                        break
+                                            candidates = gemini_obj.get("candidates") or []
+                                            if not candidates:
+                                                continue
 
-                        # flush remaining
-                        tail = buf.strip()
-                        if tail:
-                            # try treat as one SSE event too
-                            data_lines = []
-                            for line in tail.splitlines():
-                                line = line.rstrip("\r")
-                                if line.startswith("data:"):
-                                    data_lines.append(line[5:].lstrip())
-                            if data_lines:
-                                data_str = "\n".join(data_lines).strip()
-                            else:
-                                data_str = tail
-
-                            if data_str and data_str != "[DONE]":
-                                json_decoder_flush = json.JSONDecoder()
-                                pos = 0
-                                while pos < len(data_str):
-                                    search_str = data_str[pos:].lstrip()
-                                    if not search_str:
-                                        break
-                                    try:
-                                        gemini_obj, idx = json_decoder_flush.raw_decode(search_str)
-                                        pos += len(data_str[pos:]) - len(search_str) + idx
-
-                                        candidates = gemini_obj.get("candidates") or []
-                                        if candidates:
                                             c0 = candidates[0]
                                             # SAFEGUARD: Skip if candidate is None
-                                            if c0 is None or not isinstance(c0, dict):
+                                            if c0 is None:
                                                 continue
                                             text, image_md, grounding_md, thinking_content, tool_calls, global_tool_call_index = _extract_content(c0, global_tool_call_index)
                                             out_text = (text or "") + (image_md or "") + (grounding_md or "")
 
-                                            # Yield thinking content first if present
+                                            # 1) yield thinking content first if present (reasoning_content for frontend)
                                             if thinking_content:
                                                 thinking_chunk = _openai_chunk(stream_id, model_id, {"reasoning_content": thinking_content}, None, 0)
-                                                yield f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n"
+                                                out_line = f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n"
+                                                credit_deduct and credit_deduct.run(out_line)
+                                                yield out_line
 
-                                            # Yield tool calls if present
+                                            # 2) yield tool calls if present
                                             if tool_calls:
                                                 for tool_call in tool_calls:
                                                     tool_chunk = _openai_chunk(stream_id, model_id, {"tool_calls": [tool_call]}, None, 0)
-                                                    yield f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
+                                                    out_line = f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
+                                                    credit_deduct and credit_deduct.run(out_line)
+                                                    yield out_line
 
-                                            # Then yield content if present (with chunking for large content)
+                                            # 3) yield content if present (with chunking for large content like images)
                                             if out_text:
                                                 for content_chunk in _yield_content_chunks(out_text, stream_id, model_id):
+                                                    credit_deduct and credit_deduct.run(content_chunk)
                                                     yield content_chunk
 
+                                            # 4) then yield finish with usage
                                             finish = _map_finish_reason(c0.get("finishReason") if isinstance(c0, dict) else None)
                                             if finish:
                                                 # If there are tool calls, override finish_reason to "tool_calls"
@@ -1460,15 +1405,127 @@ async def generate_chat_completion(
                                                         "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
                                                         "total_tokens": usage_meta.get("totalTokenCount", 0),
                                                     }
+                                                    # Add thinking tokens if available
                                                     if usage_meta.get("thoughtsTokenCount"):
                                                         usage["reasoning_tokens"] = usage_meta.get("thoughtsTokenCount", 0)
+                                                    # Set official usage on credit_deduct for accurate billing
+                                                    if credit_deduct and usage:
+                                                        credit_deduct.is_official_usage = True
+                                                        credit_deduct.usage.prompt_tokens = usage.get("prompt_tokens", 0)
+                                                        credit_deduct.usage.completion_tokens = usage.get("completion_tokens", 0)
+                                                        credit_deduct.usage.total_tokens = usage.get("total_tokens", 0)
                                                 fin_chunk = _openai_chunk(stream_id, model_id, {}, finish, 0, usage)
-                                                yield f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n"
-                                    except json.JSONDecodeError as e:
-                                        log.warning(f"JSON decode error (flush): {e}, head={data_str[:120]}")
-                                        break
+                                                out_line = f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n"
+                                                credit_deduct and credit_deduct.run(out_line)
+                                                yield out_line
+                                                if credit_deduct:
+                                                    yield credit_deduct.usage_message
+                                                yield "data: [DONE]\n\n"
+                                                return
+                                                
+                                        except json.JSONDecodeError as e:
+                                            # If we can't decode the *first* object, it might be a partial frame (in main loop)
+                                            # If we are in flush, it's just broken data.
+                                            if pos == 0:
+                                                # Put back and wait for more bytes (rare but safe)
+                                                log.warning(f"JSON decode error (event): {e}, head={data_str[:120]}")
+                                                buf = event + "\n\n" + buf
+                                            else:
+                                                log.warning(f"JSON decode error (stacked): {e} at pos {pos}")
+                                            break
 
-                        yield "data: [DONE]\n\n"
+                            # flush remaining
+                            tail = buf.strip()
+                            if tail:
+                                # try treat as one SSE event too
+                                data_lines = []
+                                for line in tail.splitlines():
+                                    line = line.rstrip("\r")
+                                    if line.startswith("data:"):
+                                        data_lines.append(line[5:].lstrip())
+                                if data_lines:
+                                    data_str = "\n".join(data_lines).strip()
+                                else:
+                                    data_str = tail
+
+                                if data_str and data_str != "[DONE]":
+                                    json_decoder_flush = json.JSONDecoder()
+                                    pos = 0
+                                    while pos < len(data_str):
+                                        search_str = data_str[pos:].lstrip()
+                                        if not search_str:
+                                            break
+                                        try:
+                                            gemini_obj, idx = json_decoder_flush.raw_decode(search_str)
+                                            pos += len(data_str[pos:]) - len(search_str) + idx
+
+                                            candidates = gemini_obj.get("candidates") or []
+                                            if candidates:
+                                                c0 = candidates[0]
+                                                # SAFEGUARD: Skip if candidate is None
+                                                if c0 is None or not isinstance(c0, dict):
+                                                    continue
+                                                text, image_md, grounding_md, thinking_content, tool_calls, global_tool_call_index = _extract_content(c0, global_tool_call_index)
+                                                out_text = (text or "") + (image_md or "") + (grounding_md or "")
+
+                                                # Yield thinking content first if present
+                                                if thinking_content:
+                                                    thinking_chunk = _openai_chunk(stream_id, model_id, {"reasoning_content": thinking_content}, None, 0)
+                                                    out_line = f"data: {json.dumps(thinking_chunk, ensure_ascii=False)}\n\n"
+                                                    credit_deduct and credit_deduct.run(out_line)
+                                                    yield out_line
+
+                                                # Yield tool calls if present
+                                                if tool_calls:
+                                                    for tool_call in tool_calls:
+                                                        tool_chunk = _openai_chunk(stream_id, model_id, {"tool_calls": [tool_call]}, None, 0)
+                                                        out_line = f"data: {json.dumps(tool_chunk, ensure_ascii=False)}\n\n"
+                                                        credit_deduct and credit_deduct.run(out_line)
+                                                        yield out_line
+
+                                                # Then yield content if present (with chunking for large content)
+                                                if out_text:
+                                                    for content_chunk in _yield_content_chunks(out_text, stream_id, model_id):
+                                                        credit_deduct and credit_deduct.run(content_chunk)
+                                                        yield content_chunk
+
+                                                finish = _map_finish_reason(c0.get("finishReason") if isinstance(c0, dict) else None)
+                                                if finish:
+                                                    # If there are tool calls, override finish_reason to "tool_calls"
+                                                    if tool_calls:
+                                                        finish = "tool_calls"
+                                                    # Extract usage from gemini response
+                                                    usage_meta = gemini_obj.get("usageMetadata", {}) or {}
+                                                    usage = None
+                                                    if usage_meta:
+                                                        usage = {
+                                                            "prompt_tokens": usage_meta.get("promptTokenCount", 0),
+                                                            "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
+                                                            "total_tokens": usage_meta.get("totalTokenCount", 0),
+                                                        }
+                                                        if usage_meta.get("thoughtsTokenCount"):
+                                                            usage["reasoning_tokens"] = usage_meta.get("thoughtsTokenCount", 0)
+                                                        # Set official usage on credit_deduct
+                                                        if credit_deduct and usage:
+                                                            credit_deduct.is_official_usage = True
+                                                            credit_deduct.usage.prompt_tokens = usage.get("prompt_tokens", 0)
+                                                            credit_deduct.usage.completion_tokens = usage.get("completion_tokens", 0)
+                                                            credit_deduct.usage.total_tokens = usage.get("total_tokens", 0)
+                                                    fin_chunk = _openai_chunk(stream_id, model_id, {}, finish, 0, usage)
+                                                    out_line = f"data: {json.dumps(fin_chunk, ensure_ascii=False)}\n\n"
+                                                    credit_deduct and credit_deduct.run(out_line)
+                                                    yield out_line
+                                        except json.JSONDecodeError as e:
+                                            log.warning(f"JSON decode error (flush): {e}, head={data_str[:120]}")
+                                            break
+
+                            if credit_deduct:
+                                yield credit_deduct.usage_message
+                            yield "data: [DONE]\n\n"
+
+                        finally:
+                            if credit_ctx:
+                                credit_ctx.__exit__(None, None, None)
 
             except Exception as e:
                 log.exception(f"Error in stream generator: {e}")
@@ -1554,6 +1611,24 @@ async def generate_chat_completion(
 
                 gemini_response = await response.json(content_type=None)
                 openai_response = convert_gemini_to_openai(gemini_response, model_id)
+
+                # Credit deduction for non-streaming response
+                if CreditDeduct and user:
+                    with CreditDeduct(
+                        user=user,
+                        model_id=model_id,
+                        body=form_data,
+                        is_stream=False,
+                    ) as credit_deduct:
+                        # Use official usage from the response if available
+                        if openai_response.get("usage"):
+                            credit_deduct.is_official_usage = True
+                            credit_deduct.usage.prompt_tokens = openai_response["usage"].get("prompt_tokens", 0)
+                            credit_deduct.usage.completion_tokens = openai_response["usage"].get("completion_tokens", 0)
+                            credit_deduct.usage.total_tokens = openai_response["usage"].get("total_tokens", 0)
+                        else:
+                            credit_deduct.run(openai_response)
+
                 return JSONResponse(content=openai_response)
 
     except HTTPException:

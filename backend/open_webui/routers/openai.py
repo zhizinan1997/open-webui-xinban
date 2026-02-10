@@ -3365,7 +3365,7 @@ async def generate_chat_completion(
             except (TypeError, ValueError):
                 compat_budget = 8192
 
-            stream_iter = stream_chunks_handler(HeartbeatStreamWrapper(r.content))
+            stream_iter = stream_chunks_handler(user=user, model_id=model_id, form_data=form_data, stream=HeartbeatStreamWrapper(r.content))
             thinking_fallback_applied = False  # Track if thinking was disabled during retry
             log.info(f"[DEBUG STREAM RETRY] compat_stream_retry={compat_stream_retry}, compat_steps={compat_steps}")
             if compat_stream_retry and compat_steps:
@@ -3426,7 +3426,7 @@ async def generate_chat_completion(
                             break
 
                         stream_iter = stream_chunks_handler(
-                            HeartbeatStreamWrapper(r.content)
+                            user=user, model_id=model_id, form_data=form_data, stream=HeartbeatStreamWrapper(r.content)
                         )
                         buffered_lines, error_msg = await _probe_stream_for_error(
                             stream_iter, probe_lines
@@ -3455,7 +3455,7 @@ async def generate_chat_completion(
 
             if stream_iter is None:
                 stream_iter = stream_chunks_handler(
-                    HeartbeatStreamWrapper(r.content)
+                    user=user, model_id=model_id, form_data=form_data, stream=HeartbeatStreamWrapper(r.content)
                 )
 
             async def combined_stream():

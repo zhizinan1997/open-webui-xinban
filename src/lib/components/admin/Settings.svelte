@@ -21,6 +21,8 @@
 	import Evaluations from './Settings/Evaluations.svelte';
 	import CodeExecution from './Settings/CodeExecution.svelte';
 	import Tools from './Settings/Tools.svelte';
+	import Credit from './Settings/Credit.svelte';
+	import SplashNotification from './Settings/SplashNotification.svelte';
 
 	import ChartBar from '../icons/ChartBar.svelte';
 	import DocumentChartBar from '../icons/DocumentChartBar.svelte';
@@ -38,6 +40,8 @@
 		const tabFromPath = pathParts[pathParts.length - 1];
 		selectedTab = [
 			'general',
+			'splash-notification',
+			'credit',
 			'connections',
 			'models',
 			'evaluations',
@@ -94,6 +98,18 @@
 				'community',
 				'channels'
 			]
+		},
+		{
+			id: 'splash-notification',
+			title: 'Splash Notification',
+			route: '/admin/settings/splash-notification',
+			keywords: ['splash', 'notification', 'announcement', 'popup', 'notice', '通知', '公告', '开屏']
+		},
+		{
+			id: 'credit',
+			title: 'Credit',
+			route: '/admin/settings/credit',
+			keywords: ['credit', 'billing', 'payment', 'balance']
 		},
 		{
 			id: 'connections',
@@ -332,7 +348,9 @@
 					goto(tab.route);
 				}}
 			>
-				<div class="self-center mr-2.5 flex items-center justify-center w-7 h-7 rounded-lg bg-gray-200 dark:bg-gray-700">
+				<div
+					class="self-center mr-2.5 flex items-center justify-center w-7 h-7 rounded-lg bg-gray-200 dark:bg-gray-700"
+				>
 					{#if tab.id === 'general'}
 						<svg
 							xmlns="http://www.w3.org/2000/svg"
@@ -343,6 +361,30 @@
 							<path
 								fill-rule="evenodd"
 								d="M6.955 1.45A.5.5 0 0 1 7.452 1h1.096a.5.5 0 0 1 .497.45l.17 1.699c.484.12.94.312 1.356.562l1.321-1.081a.5.5 0 0 1 .67.033l.774.775a.5.5 0 0 1 .034.67l-1.08 1.32c.25.417.44.873.561 1.357l1.699.17a.5.5 0 0 1 .45.497v1.096a.5.5 0 0 1-.45.497l-1.699.17c-.12.484-.312.94-.562 1.356l1.082 1.322a.5.5 0 0 1-.034.67l-.774.774a.5.5 0 0 1-.67.033l-1.322-1.08c-.416.25-.872.44-1.356.561l-.17 1.699a.5.5 0 0 1-.497.45H7.452a.5.5 0 0 1-.497-.45l-.17-1.699a4.973 4.973 0 0 1-1.356-.562L4.108 13.37a.5.5 0 0 1-.67-.033l-.774-.775a.5.5 0 0 1-.034-.67l1.08-1.32a4.971 4.971 0 0 1-.561-1.357l-1.699-.17A.5.5 0 0 1 1 8.548V7.452a.5.5 0 0 1 .45-.497l1.699-.17c.12-.484.312-.94.562-1.356L2.629 4.107a.5.5 0 0 1 .034-.67l.774-.774a.5.5 0 0 1 .67-.033L5.43 3.71a4.97 4.97 0 0 1 1.356-.561l.17-1.699ZM6 8c0 .538.212 1.026.558 1.385l.057.057a2 2 0 0 0 2.828-2.828l-.058-.056A2 2 0 0 0 6 8Z"
+								clip-rule="evenodd"
+							/>
+						</svg>
+					{:else if tab.id === 'splash-notification'}
+						<svg
+							xmlns="http://www.w3.org/2000/svg"
+							viewBox="0 0 16 16"
+							fill="currentColor"
+							class="w-3.5 h-3.5 text-gray-600 dark:text-gray-300"
+						>
+							<path
+								d="M3.5 9.5a.75.75 0 0 1 .75.75v1a.75.75 0 0 1-1.5 0v-1a.75.75 0 0 1 .75-.75ZM8.75 9.5a.75.75 0 0 0-.75.75v1a.75.75 0 0 0 1.5 0v-1a.75.75 0 0 0-.75-.75ZM2.207 2.293a1 1 0 0 1 1.414 0L4.854 3.52A5.999 5.999 0 0 1 12 3.51l1.236-1.217a1 1 0 1 1 1.4 1.424L13.42 4.926A5.98 5.98 0 0 1 14 8H2c0-1.144.32-2.213.876-3.123L1.793 3.707a1 1 0 0 1 0-1.414l.414.414-.414-.414ZM10.5 9.5a.75.75 0 0 1 .75.75v1a.75.75 0 0 1-1.5 0v-1a.75.75 0 0 1 .75-.75Z"
+							/>
+						</svg>
+					{:else if tab.id === 'credit'}
+						<svg
+							xmlns="http://www.w3.org/2000/svg"
+							viewBox="0 0 16 16"
+							fill="currentColor"
+							class="w-3.5 h-3.5 text-gray-600 dark:text-gray-300"
+						>
+							<path
+								fill-rule="evenodd"
+								d="M2 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1h1a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4zm10 0H4v8h8V4zm2 2h-1v4h1V6zm-3 2a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"
 								clip-rule="evenodd"
 							/>
 						</svg>
@@ -551,6 +593,24 @@
 			/>
 		{:else if selectedTab === 'code-execution'}
 			<CodeExecution
+				saveHandler={async () => {
+					toast.success($i18n.t('Settings saved successfully!'));
+
+					await tick();
+					await config.set(await getBackendConfig());
+				}}
+			/>
+		{:else if selectedTab === 'splash-notification'}
+			<SplashNotification
+				saveHandler={async () => {
+					toast.success($i18n.t('Settings saved successfully!'));
+
+					await tick();
+					await config.set(await getBackendConfig());
+				}}
+			/>
+		{:else if selectedTab === 'credit'}
+			<Credit
 				saveHandler={async () => {
 					toast.success($i18n.t('Settings saved successfully!'));
 
