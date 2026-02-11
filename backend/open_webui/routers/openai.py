@@ -1,8 +1,12 @@
 import asyncio
+import base64
 import copy
 import hashlib
+import io
 import json
 import logging
+import os
+import re
 import uuid
 import time
 from typing import Optional
@@ -28,8 +32,11 @@ from sqlalchemy.orm import Session
 from open_webui.internal.db import get_session
 
 from open_webui.models.models import Models
+from open_webui.models.files import Files, FileForm
+from open_webui.storage.provider import Storage
 from open_webui.config import (
     CACHE_DIR,
+    UPLOAD_DIR,
 )
 from open_webui.env import (
     MODELS_CACHE_TTL,
@@ -1148,29 +1155,211 @@ def convert_responses_to_chat_completions(responses_data: dict, model_id: str) -
     }
 
 
+# Regex to find markdown image tags with data URIs: ![alt](data:image/...;base64,...)
+_DATA_URI_IMAGE_RE = re.compile(
+    r'(!\[([^\]]*)\]\()(data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+)(\))'
+)
+
+
+def _replace_large_data_uris_in_string(content: str) -> str:
+    """
+    Scan a string for markdown image tags containing large base64 data URIs.
+    If any exceed the threshold, save them as files and replace with file URLs.
+    """
+    if "data:image/" not in content or ";base64," not in content:
+        return content  # Fast exit: no data URIs present
+
+    img_counter = [0]  # Use list for mutability in closure
+
+    def _replacer(match):
+        prefix = match.group(1)   # e.g. "![alt]("
+        data_uri = match.group(3)  # e.g. "data:image/jpeg;base64,..."
+        suffix = match.group(4)    # ")"
+
+        if len(data_uri) > _IMAGE_FILE_THRESHOLD:
+            idx = img_counter[0]
+            img_counter[0] += 1
+            # Extract mime
+            header_end = data_uri.find(",")
+            if header_end > 0:
+                header = data_uri[:header_end]
+                mime = header.split(":", 1)[1].split(";", 1)[0] if ":" in header else "image/png"
+            else:
+                mime = "image/png"
+
+            file_url = _save_b64_image_to_file(data_uri, mime, idx)
+            if file_url:
+                return f"{prefix}{file_url}{suffix}"
+
+        return match.group(0)  # Keep original if small or save failed
+
+    return _DATA_URI_IMAGE_RE.sub(_replacer, content)
+
+
 def _stringify_message_content(content) -> str:
+    """
+    Convert message.content (which can be a string, list of parts, or dict)
+    into a plain string. Handles multimodal content by converting image_url
+    parts to markdown image tags, routing large base64 through file saving.
+    """
     if isinstance(content, str):
-        return content
+        return _replace_large_data_uris_in_string(content)
     if isinstance(content, list):
         parts = []
+        img_idx = 0
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
                 continue
             if isinstance(item, dict):
                 item_type = item.get("type", "")
+
+                # Handle image_url parts from multimodal completions API
+                if item_type == "image_url":
+                    image_url_obj = item.get("image_url")
+                    if isinstance(image_url_obj, dict):
+                        url = image_url_obj.get("url", "")
+                    elif isinstance(image_url_obj, str):
+                        url = image_url_obj
+                    else:
+                        url = item.get("url", "")
+
+                    if url:
+                        parts.append(_make_image_markdown(img_idx, url))
+                        img_idx += 1
+                    continue
+
+                # Handle text parts
                 if item_type in ("text", "output_text"):
                     text = item.get("text") or item.get("content") or ""
                     if text:
                         parts.append(text)
                         continue
+
+                # Fallback for other dict formats
                 text = item.get("text") or item.get("content") or item.get("value") or ""
                 if text:
                     parts.append(text)
-        return "".join(parts)
+
+                # Also check for inline image data in dict without explicit type
+                b64_data = item.get("b64_json") or item.get("base64") or item.get("data")
+                if b64_data and not text:
+                    mime = item.get("content_type") or item.get("mime_type") or "image/png"
+                    if b64_data.startswith("data:"):
+                        data_uri = b64_data
+                    else:
+                        data_uri = f"data:{mime};base64,{b64_data}"
+                    parts.append(_make_image_markdown(img_idx, data_uri))
+                    img_idx += 1
+
+        result = "\n\n".join(parts) if any(p.startswith("![") for p in parts) else "".join(parts)
+        return result
     if isinstance(content, dict):
         return content.get("text") or content.get("content") or content.get("value") or ""
     return ""
+
+
+# Threshold in bytes: base64 images larger than this will be saved as files
+# instead of being inlined as data URIs. 1MB is chosen because:
+# - Socket.IO default max_http_buffer_size is 1MB
+# - Browsers struggle rendering very large data: URIs in <img> tags
+# - 4K images in JPEG can be 5-15MB in base64
+_IMAGE_FILE_THRESHOLD = 1 * 1024 * 1024  # 1 MB
+
+
+def _save_b64_image_to_file(b64_data: str, mime_type: str, idx: int) -> str:
+    """
+    Save a base64-encoded image to disk and register it in the Files table.
+    Returns a server-relative URL like /api/v1/files/{id}/content/image.png
+    that the frontend can use in <img> tags.
+
+    Falls back to data URI if saving fails for any reason.
+    """
+    try:
+        # Strip data URI prefix if present
+        raw_b64 = b64_data
+        detected_mime = mime_type
+        if raw_b64.startswith("data:"):
+            # e.g. data:image/jpeg;base64,/9j/4AAQ...
+            header, _, raw_b64 = raw_b64.partition(",")
+            if ";" in header:
+                detected_mime = header.split(":", 1)[1].split(";", 1)[0]
+
+        image_bytes = base64.b64decode(raw_b64)
+
+        # Determine file extension from mime type
+        ext_map = {
+            "image/jpeg": "jpg",
+            "image/jpg": "jpg",
+            "image/png": "png",
+            "image/gif": "gif",
+            "image/webp": "webp",
+            "image/svg+xml": "svg",
+        }
+        ext = ext_map.get(detected_mime, "png")
+        file_id = str(uuid.uuid4())
+        filename = f"generated_image_{idx}.{ext}"
+        storage_filename = f"{file_id}_{filename}"
+
+        # Save file directly to UPLOAD_DIR
+        file_path = os.path.join(str(UPLOAD_DIR), storage_filename)
+        with open(file_path, "wb") as f:
+            f.write(image_bytes)
+
+        # Register in Files table so /api/v1/files/{id}/content works
+        Files.insert_new_file(
+            user_id="system",  # System-generated image, no specific user
+            form_data=FileForm(
+                id=file_id,
+                filename=filename,
+                path=file_path,
+                data={},
+                meta={
+                    "name": filename,
+                    "content_type": detected_mime,
+                    "size": len(image_bytes),
+                    "source": "ai_generated",
+                },
+            ),
+        )
+
+        url = f"/api/v1/files/{file_id}/content"
+        log.info(
+            "[NORMALIZE] Saved large image (%d bytes) as file %s -> %s",
+            len(image_bytes), file_id, url,
+        )
+        return url
+
+    except Exception as e:
+        log.warning("[NORMALIZE] Failed to save image as file: %s. Falling back to data URI.", e)
+        # Return None to signal caller to fall back to data URI
+        return None
+
+
+def _make_image_markdown(idx: int, data_uri: str) -> str:
+    """
+    Build a markdown image tag. If the data URI is large,
+    save it as a file and use a server URL instead.
+    """
+    # Estimate the size: base64 string length ≈ encoded byte size
+    if len(data_uri) > _IMAGE_FILE_THRESHOLD:
+        # Extract mime type and b64 data for saving
+        if data_uri.startswith("data:"):
+            header_end = data_uri.find(",")
+            if header_end > 0:
+                header = data_uri[:header_end]
+                mime = header.split(":", 1)[1].split(";", 1)[0] if ":" in header else "image/png"
+            else:
+                mime = "image/png"
+        else:
+            mime = "image/png"
+
+        file_url = _save_b64_image_to_file(data_uri, mime, idx)
+        if file_url:
+            return f"![image_{idx}]({file_url})"
+
+    # Fallback: inline data URI (small images or save failure)
+    return f"![image_{idx}]({data_uri})"
 
 
 def _normalize_chat_completion_response(response: dict) -> dict:
@@ -1214,13 +1403,13 @@ def _normalize_chat_completion_response(response: dict) -> dict:
                     if isinstance(image_url_obj, dict):
                         nested_url = image_url_obj.get("url", "")
                         if nested_url:
-                            image_parts.append(f"![image_{idx}]({nested_url})")
+                            image_parts.append(_make_image_markdown(idx, nested_url))
                             continue
 
                     # Format 2: flat url
                     url_val = img.get("url", "")
                     if url_val.startswith("data:"):
-                        image_parts.append(f"![image_{idx}]({url_val})")
+                        image_parts.append(_make_image_markdown(idx, url_val))
                         continue
 
                     # Format 3: b64_json or similar
@@ -1232,11 +1421,10 @@ def _normalize_chat_completion_response(response: dict) -> dict:
 
                 if b64_data:
                     if b64_data.startswith("data:"):
-                        image_parts.append(f"![image_{idx}]({b64_data})")
+                        data_uri = b64_data
                     else:
-                        image_parts.append(
-                            f"![image_{idx}](data:{mime_type};base64,{b64_data})"
-                        )
+                        data_uri = f"data:{mime_type};base64,{b64_data}"
+                    image_parts.append(_make_image_markdown(idx, data_uri))
 
             if image_parts:
                 existing_content = message.get("content") or ""
