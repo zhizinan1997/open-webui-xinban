@@ -121,6 +121,9 @@ if os.path.exists(f"{DATA_DIR}/config.json"):
 DEFAULT_CONFIG = {
     "version": 0,
     "ui": {},
+    "math_ocr": {
+        "model_id": ""
+    },
 }
 
 
@@ -1783,6 +1786,12 @@ TASK_MODEL_EXTERNAL = PersistentConfig(
     "TASK_MODEL_EXTERNAL",
     "task.model.external",
     os.environ.get("TASK_MODEL_EXTERNAL", ""),
+)
+
+MATH_OCR_MODEL_ID = PersistentConfig(
+    "MATH_OCR_MODEL_ID",
+    "math_ocr.model_id",
+    os.environ.get("MATH_OCR_MODEL_ID", ""),
 )
 
 TITLE_GENERATION_PROMPT_TEMPLATE = PersistentConfig(
